@@ -21,6 +21,9 @@ class Container extends Component implements IContainer
 	/** @var IComponent[] */
 	private array $components = [];
 
+	/** @var array<string, bool> createComponent<Name>() declared with exactly the requested name, per class::method */
+	private static array $factoryCache = [];
+
 
 	/********************* interface IContainer ****************d*g**/
 
@@ -157,7 +160,7 @@ class Container extends Component implements IContainer
 		if (
 			$ucname !== $name
 			&& method_exists($this, $method)
-			&& (new \ReflectionMethod($this, $method))->getName() === $method
+			&& (self::$factoryCache[static::class . '::' . $method] ??= (new \ReflectionMethod($this, $method))->getName() === $method)
 		) {
 			$component = $this->$method($name);
 			if (!$component instanceof IComponent && !isset($this->components[$name])) {
@@ -195,13 +198,20 @@ class Container extends Component implements IContainer
 	final public function getComponentTree(): array
 	{
 		$res = [];
+		$this->collectComponentTree($res);
+		return $res;
+	}
+
+
+	/** @param  list<IComponent>  $res */
+	private function collectComponentTree(array &$res): void
+	{
 		foreach ($this->components as $component) {
 			$res[] = $component;
 			if ($component instanceof self) {
-				$res = [...$res, ...$component->getComponentTree()];
+				$component->collectComponentTree($res);
 			}
 		}
-		return $res;
 	}
 
 
