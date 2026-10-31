@@ -47,6 +47,9 @@ abstract class Component implements IComponent
 	 */
 	private array $lookups = [];
 
+	/** Counts the changes of any parent, so that a handler that has changed no ancestor can be told without a walk. */
+	private static int $changes = 0;
+
 
 	/**
 	 * Finds the closest ancestor of specified type, or the root when $type is null.
@@ -166,15 +169,15 @@ abstract class Component implements IComponent
 			$this->attachedDepths[$type] = $found[1];
 		}
 
-		if ($attached && !in_array($attached(...), $this->monitors[$type][0])) {
-			$this->monitors[$type][0][] = $attached(...);
+		if ($attached && !in_array($closure = $attached(...), $this->monitors[$type][0])) {
+			$this->monitors[$type][0][] = $closure;
 			if ($found) {
 				$attached($found[0]);
 			}
 		}
 
-		if ($detached && !in_array($detached(...), $this->monitors[$type][1])) {
-			$this->monitors[$type][1][] = $detached(...);
+		if ($detached && !in_array($closure = $detached(...), $this->monitors[$type][1])) {
+			$this->monitors[$type][1][] = $closure;
 		}
 	}
 
@@ -280,6 +283,7 @@ abstract class Component implements IComponent
 	{
 		$this->parent = $parent;
 		$this->moves++;
+		self::$changes++;
 		$this->forgetLookups();
 	}
 
@@ -305,7 +309,7 @@ abstract class Component implements IComponent
 		$processed[spl_object_id($this)] = $this->moves;
 		$moves = $this->moves;
 
-		foreach (array_keys($this->monitors) as $type) {
+		foreach ($this->monitors as $type => $_) { // iterates a snapshot, as handlers may change the monitors
 			if (!isset($this->attachedDepths[$type]) // not notified yet, the ancestor is not inside the subtree
 				&& ($found = $this->findAncestor($type))
 			) {
@@ -375,6 +379,10 @@ abstract class Component implements IComponent
 					$ancestorDepth = $this->attachedDepths[$type] ?? 0; // a previous handler may have changed it
 					if ($ancestorDepth > $depth) { // the ancestor lies beyond the cut, an ancestor inside the subtree stays
 						unset($this->attachedDepths[$type]);
+						if (empty($this->monitors[$type][1])) { // nobody to tell
+							continue;
+						}
+
 						$this->notify($type, 1, $this->getAncestor($ancestorDepth), $rollingBack, $called);
 						if ($this->moves !== $moves) {
 							return; // moved by a handler, the nested change has updated it
@@ -400,6 +408,7 @@ abstract class Component implements IComponent
 		}
 
 		$moves = $this->moves;
+		$changes = self::$changes;
 		$failure = null;
 		$this->notifying[$type] = true;
 		foreach ($this->monitors[$type][$kind] ?? [] as $handler) {
@@ -420,7 +429,8 @@ abstract class Component implements IComponent
 
 		// a handler may have moved the component or cut off an ancestor, the nested change has updated the state;
 		// while detaching, the ancestor is still there until the walk ends, so only a move of its own counts
-		if ($kind === 0 || $this->moves !== $moves) {
+		// (when attaching, the ancestor is the closest one, so it only needs checking if some parent has changed)
+		if ($this->moves !== $moves || ($kind === 0 && self::$changes !== $changes)) {
 			$told = $kind === 0 ? $ancestor : null;
 			$found = $this->findAncestor($type);
 			if (($found[0] ?? null) !== $told) {
